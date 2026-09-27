@@ -1,0 +1,58 @@
+{
+  "_fixture": "RECORDED from the Grid sandbox 2026-09-26: GET /transactions/{id} with the VIEW token, after the payout completed.",
+  "createdAt": "2026-09-26T19:56:44.885949Z",
+  "customerId": "Customer:01a0df30-6d3c-938e-0000-69434433047f",
+  "description": "spike-ok-c4164034163d8d94",
+  "destination": {
+    "accountId": "ExternalAccount:01a0df4a-9a9d-7e0c-0000-2fdf81a58f46",
+    "destinationType": "ACCOUNT"
+  },
+  "direction": "DEBIT",
+  "exchangeRate": 7.361722333333334,
+  "expectedSettlementAt": null,
+  "fees": 920215,
+  "id": "Transaction:01a0df4a-9fd5-b78f-0000-eeb0ea70837b",
+  "paymentInstructions": [
+    {
+      "accountOrWalletInfo": {
+        "accountType": "SPARK_WALLET",
+        "address": "sparkrt1pgss8exj33xx9qqlsegnz64zrghkz504rfxgt0jk72x3q04dyhza8dnj0cu0jd",
+        "assetType": "USDB",
+        "invoice": "sparkrt1pgss8ter0fhc4c220f3zftmpz49h8wqte8eg3m5zkrraplgc048jucgszg3ssqgjzqqekv73mmh842yj7drsjwh7t7tz5zt8wf5kghm5v4ehggszppjp5s80cg3qjdzc55g2567tn3lj705hdsr577tg8ah795mlnt6807y657qhkmgfkf9w75p4wz3l8vhua85zdn6ryj32zuj0p00pv2l5z4u47mw6h4s"
+      }
+    }
+  ],
+  "paymentRail": "BANK_TRANSFER",
+  "platformCustomerId": "01a0df30-6d14-b4db-0000-f107fa1c413c",
+  "platformFees": 0,
+  "quoteId": "Quote:01a0df4a-9fc6-5246-0000-abb564879494",
+  "railSelectionMode": "AUTO",
+  "receivedAmount": {
+    "amount": 3000000,
+    "currency": {
+      "code": "NGN",
+      "decimals": 2,
+      "name": "Nigerian Naira",
+      "symbol": "₦"
+    }
+  },
+  "sentAmount": {
+    "amount": 23005382,
+    "currency": {
+      "code": "USDB",
+      "decimals": 6,
+      "name": "USDB",
+      "symbol": "$"
+    }
+  },
+  "settledAt": "2026-09-26T19:57:48.436768Z",
+  "settlementTimelineSeconds": null,
+  "source": {
+    "currency": "USDB",
+    "customerId": "Customer:01a0df30-6d3c-938e-0000-69434433047f",
+    "sourceType": "REALTIME_FUNDING"
+  },
+  "status": "COMPLETED",
+  "type": "OUTGOING",
+  "updatedAt": "2026-09-26T19:57:48.488628Z"
+}

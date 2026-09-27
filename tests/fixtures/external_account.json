@@ -1,0 +1,23 @@
+{
+  "_fixture": "RECORDED from the Grid sandbox 2026-09-26: GET /platform/external-accounts/{id} with the VIEW token.",
+  "accountInfo": {
+    "accountNumber": "0123456789",
+    "accountType": "NGN_ACCOUNT",
+    "bankName": "OPay",
+    "beneficiary": {
+      "beneficiaryType": "INDIVIDUAL",
+      "fullName": "Ada Obi"
+    },
+    "paymentRails": [
+      "BANK_TRANSFER"
+    ]
+  },
+  "beneficiaryVerificationStatus": "MATCHED",
+  "beneficiaryVerifiedData": {
+    "fullName": "Ada Obi"
+  },
+  "currency": "NGN",
+  "defaultUmaDepositAccount": false,
+  "id": "ExternalAccount:01a0df4a-9a9d-7e0c-0000-2fdf81a58f46",
+  "status": "ACTIVE"
+}

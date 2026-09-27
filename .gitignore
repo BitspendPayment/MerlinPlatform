@@ -1,0 +1,5 @@
+/target
+# The platform's store holds its half of every escrow key.
+*-state.json
+*.tmp
+.env*

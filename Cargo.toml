@@ -1,0 +1,27 @@
+[package]
+name = "merlin-platform"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Send to a bank: pays a Nigerian bank through Lightspark Grid, then is reimbursed out of the customer's Merlin escrow."
+
+[dependencies]
+# MerlinWallet's crates, pinned to one commit: the escrow service, the cosigner's policy and wire
+# types, Ark and the threshold maths. Moving to a newer MerlinWallet is changing all four `rev`s.
+# The lockfile was seeded from MerlinWallet's: ark-core pins secp256k1 0.32.0-beta.2, which is
+# yanked, so a fresh resolve fails.
+escrow-service = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "f25ff8bc954a6c090af4871b307224847662f255" }
+cosigner = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "f25ff8bc954a6c090af4871b307224847662f255" }
+ark = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "f25ff8bc954a6c090af4871b307224847662f255", features = ["client"] }
+threshold = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "f25ff8bc954a6c090af4871b307224847662f255", features = ["std"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
