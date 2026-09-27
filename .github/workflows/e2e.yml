@@ -1,0 +1,83 @@
+# Send to banks and mobile money end to end: this platform, a real cosigner in a dev enclave, a
+# regtest Ark server — and the fake Grid, so no Grid secrets are needed. MerlinWallet's
+# `make send-walkthrough`, run against this checkout.
+#
+# MerlinWallet is checked out at exactly the commit Cargo.toml pins, so what is tested is what this
+# platform builds against. The enclave boots from the prebuilt dev enclave that commit pins in its
+# `enclave-bundle.lock` — a bundle packed with the platform and the fake Grid in its image — on the
+# runner's KVM, as MerlinWallet's own enclave-e2e job does. Nested virtualisation on hosted runners
+# works but is not something GitHub supports, so this is the job that can fail for reasons outside
+# either repository; its logs are uploaded when it does.
+name: e2e
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+jobs:
+  send-walkthrough:
+    name: send walkthrough (fake Grid, dev enclave, KVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: MerlinPlatform
+      - name: The MerlinWallet commit this platform pins
+        id: pin
+        run: |
+          rev=$(grep -o 'rev = "[0-9a-f]\{40\}"' MerlinPlatform/Cargo.toml | head -1 | cut -d'"' -f2)
+          [ -n "$rev" ] || { echo "no MerlinWallet rev in Cargo.toml" >&2; exit 1; }
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: BitspendPayment/MerlinWallet
+          ref: ${{ steps.pin.outputs.rev }}
+          path: MerlinWallet
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            MerlinWallet/cosigner/target
+            MerlinWallet/ffi/target
+            MerlinWallet/.platform/build/target
+          key: e2e-${{ steps.pin.outputs.rev }}-${{ hashFiles('MerlinPlatform/Cargo.lock') }}
+          restore-keys: e2e-
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.12.2'
+      - name: Install protoc and the Dart plugin
+        run: |
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          # Pinned: the generator must match the protobuf runtime MerlinWallet's `protocol` pins.
+          dart pub global activate protoc_plugin 21.1.2
+      - name: Let this user open KVM, and load the vsock loopback transport
+        run: |
+          if [ -e /dev/kvm ] && [ ! -r /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+          [ -e /dev/vsock ] || sudo modprobe vsock_loopback
+      - name: Fetch the pinned dev enclave, wasi-sdk, and the protocol stubs
+        working-directory: MerlinWallet
+        run: make enclave-bundle wasi-sdk proto
+      - name: The walkthrough
+        working-directory: MerlinWallet
+        env:
+          # Where scripts/platform.sh finds this platform to build against MerlinWallet's crates.
+          MERLIN_PLATFORM: ${{ github.workspace }}/MerlinPlatform
+        run: make send-walkthrough
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: send-walkthrough-logs
+          path: |
+            MerlinWallet/.platform/run/*.log
+            MerlinWallet/.enclave/target/qemu-nitro/merlin/*.log

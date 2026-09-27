@@ -3,17 +3,17 @@ name = "merlin-platform"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Send to a bank: pays a Nigerian bank through Lightspark Grid, then is reimbursed out of the customer's Merlin escrow."
+description = "Send to a bank or mobile money: pays out through Lightspark Grid, then is reimbursed out of the customer's Merlin escrow."
 
 [dependencies]
 # MerlinWallet's crates, pinned to one commit: the escrow service, the cosigner's policy and wire
 # types, Ark and the threshold maths. Moving to a newer MerlinWallet is changing all four `rev`s.
 # The lockfile was seeded from MerlinWallet's: ark-core pins secp256k1 0.32.0-beta.2, which is
 # yanked, so a fresh resolve fails.
-escrow-service = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "e263e28a2f2eaceb65e0ece34f52330c38a91b8e" }
-cosigner = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "e263e28a2f2eaceb65e0ece34f52330c38a91b8e" }
-ark = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "e263e28a2f2eaceb65e0ece34f52330c38a91b8e", features = ["signing", "client"] }
-threshold = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "e263e28a2f2eaceb65e0ece34f52330c38a91b8e", features = ["std"] }
+escrow-service = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "29c1e04e5f56a1b12b600500537f34d4571ab670" }
+cosigner = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "29c1e04e5f56a1b12b600500537f34d4571ab670" }
+ark = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "29c1e04e5f56a1b12b600500537f34d4571ab670", features = ["signing", "client"] }
+threshold = { git = "https://github.com/BitspendPayment/MerlinWallet", rev = "29c1e04e5f56a1b12b600500537f34d4571ab670", features = ["std"] }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 axum = "0.8"

@@ -1,0 +1,35 @@
+{
+  "_fixture": "RECORDED from the Grid sandbox 2026-09-26: GET /discoveries?country=NG&currency=NGN with the VIEW token, cut to the first 5 of its 344 entries.",
+  "data": [
+    {
+      "bankName": "OPay",
+      "country": "NG",
+      "currency": "NGN",
+      "displayName": "OPay"
+    },
+    {
+      "bankName": "Kegow(Chamsmobile)",
+      "country": "NG",
+      "currency": "NGN",
+      "displayName": "Kegow(Chamsmobile)"
+    },
+    {
+      "bankName": "Reliance Microfinance Bank",
+      "country": "NG",
+      "currency": "NGN",
+      "displayName": "Reliance Microfinance Bank"
+    },
+    {
+      "bankName": "Keystone Bank",
+      "country": "NG",
+      "currency": "NGN",
+      "displayName": "Keystone Bank"
+    },
+    {
+      "bankName": "GT Bank",
+      "country": "NG",
+      "currency": "NGN",
+      "displayName": "GT Bank"
+    }
+  ]
+}

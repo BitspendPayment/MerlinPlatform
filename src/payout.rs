@@ -1,20 +1,24 @@
-//! The deal a customer seals before this platform pays their bank, and the one refusal it waits
+//! The deal a customer seals before this platform pays their payee, and the one refusal it waits
 //! for before it does.
 //!
-//! The platform pays first: Grid sends the naira, funded just in time in USDB — Grid's dollar, on
-//! Spark — from the platform's own treasury. It is then reimbursed out of the customer's escrow, at
-//! the price in sats the customer agreed, and only when the cosigner, with its own read-only Grid
-//! token, has fetched both records below and found what the customer sealed.
+//! The platform pays first: Grid sends the money — naira to a bank in Lagos, shillings to an M-PESA
+//! wallet — funded just in time in USDB, Grid's dollar on Spark, from the platform's own treasury.
+//! It is then reimbursed out of the customer's escrow, at the price in sats the customer agreed,
+//! and only when the cosigner, with its own read-only Grid token, has fetched both records below
+//! and found what the customer sealed.
 //!
 //! The customer agrees a price, not a cost. What the platform paid Grid is its own affair — the
 //! USDB/BTC rate and its margin are inside the price — so the cosigner checks what the customer
-//! cares about: the naira arrived, at the account they typed, and no more than the price left.
+//! cares about: the money arrived, at the account they typed, and no more than the price left.
+
+use std::collections::BTreeMap;
 
 use cosigner::evidence::{HttpGet, OnUnavailable, Predicate};
 use cosigner::policy::Policy;
 
-/// Grid, as the cosigner reaches it. Spelled exactly as the image's credential origin:
-/// `credential()` compares the two as strings, so `https://api.lightspark.com:443` would not match.
+/// Grid's own origin: where the platform dials it unless told otherwise, and — spelled exactly as
+/// the image's credential origin, which `credential()` compares as a string, so never with `:443`
+/// — where the enclave reaches it.
 pub const GRID_ORIGIN: &str = "https://api.lightspark.com";
 /// The Grid API version this was written against. It is part of every path.
 pub const GRID_API: &str = "/grid/2025-10-13";
@@ -32,22 +36,60 @@ pub const CREDENTIAL_KEY: &str = "GRID";
 /// ponytail: matching refusal text. Upgrade path: a typed refusal code on `release-refused`.
 pub const PREFLIGHT_REFUSAL: &str = r#"status is "PENDING", not "COMPLETED""#;
 
+/// Does the pre-flight's answer mean this platform will be repaid? The deal's deadline if so.
+///
+/// Three things, all from the cosigner and none from the app, which is the party a platform that
+/// pays first is guarding against:
+///
+/// - the refusal is exactly [`PREFLIGHT_REFUSAL`]: every term holds but the payout completing;
+/// - the escrow is committed to the policy this platform **offered** — `all_of` stops at its first
+///   failing term, so a policy with a term appended after `status` refuses in exactly those words
+///   now and for ever after;
+/// - the deal has at least `min_left` seconds to run, since nothing is released after it ends.
+pub fn preflight_clears(
+    reason: &str,
+    deal: Option<&cosigner::escrow_session::DealTerms>,
+    offered: &Policy,
+    now: i64,
+    min_left: i64,
+) -> Result<i64, String> {
+    if reason != PREFLIGHT_REFUSAL {
+        return Err(format!("the cosigner would not reimburse it — {reason}"));
+    }
+    let deal = deal.ok_or("the cosigner did not say which deal the escrow is committed to")?;
+    if deal.policy_sha256 != cosigner::policy::policy_sha256(offered) {
+        return Err("the escrow is committed to another policy than the one offered".into());
+    }
+    let left = deal.deadline - now;
+    if left < min_left {
+        return Err(format!(
+            "the deal ends in {left}s, and a payout needs at least {min_left}s to be repaid in"
+        ));
+    }
+    Ok(deal.deadline)
+}
+
 /// What the customer asked for, as the policy will hold it.
 pub struct Deal<'a> {
     /// Where the platform is paid, as the script an output pays.
     pub platform_script_hex: &'a str,
-    /// Grid's id for the payee's bank account.
+    /// Grid as the ENCLAVE reaches it, which is not always where the platform dials it: a fake Grid
+    /// on this host is `http://192.168.127.254:<port>` from inside the enclave. Spelled exactly as
+    /// the image's `SERVICE_CREDENTIAL_ORIGIN_GRID`, or the cosigner sends its token nowhere.
+    pub grid_origin: &'a str,
+    /// Grid's id for the payee's account.
     pub account_id: &'a str,
-    /// The account number and bank the customer typed. Checked against Grid's record of
+    /// The account the customer typed, by Grid's names for its fields — `accountNumber` and
+    /// `bankName`, or `phoneNumber` and `provider`. Each is checked against Grid's record of
     /// `account_id`, so an id that names somebody else's account is refused.
-    pub account_number: &'a str,
-    pub bank_name: &'a str,
+    pub payee: BTreeMap<String, String>,
     /// Chosen by the customer's app. Carried as the payout's `description`, so one payout can
     /// satisfy only the deal that named it — the cosigner's replay ledger is per wallet, and
     /// without this one payout could be claimed from two customers' escrows.
     pub deal_tag: &'a str,
-    /// Naira, in kobo, the payee must receive.
-    pub amount_kobo: i64,
+    /// The payee's currency, and how much of it, in minor units, they must receive.
+    pub currency: &'a str,
+    pub amount_minor: i64,
     /// The price the customer agreed, in sats — the most the escrow may release for this payout.
     pub price_sats: u64,
 }
@@ -86,34 +128,32 @@ pub fn policy_for(deal: &Deal) -> Policy {
     }
 }
 
-/// The payee's account is the one the customer typed.
+/// The payee's account is the one the customer typed: every field of it.
 ///
 /// A fixed path: the account is known when the deal is sealed. A Grid external account cannot be
 /// edited in place (the API has no PATCH), so what this finds is what the payout was sent to.
 fn the_payee(deal: &Deal) -> HttpGet {
     HttpGet {
-        provider: GRID_ORIGIN.into(),
+        provider: deal.grid_origin.into(),
         path: format!("{GRID_API}/platform/external-accounts/{}", deal.account_id),
         credentials: CREDENTIAL_KEY.into(),
-        expect: vec![
-            Predicate::Equals {
-                at: "accountInfo.accountNumber".into(),
-                value: deal.account_number.into(),
-            },
-            Predicate::Equals {
-                at: "accountInfo.bankName".into(),
-                value: deal.bank_name.into(),
-            },
-        ],
+        expect: deal
+            .payee
+            .iter()
+            .map(|(field, value)| Predicate::Equals {
+                at: format!("accountInfo.{field}"),
+                value: value.clone(),
+            })
+            .collect(),
         on_unavailable: OnUnavailable::Pending,
     }
 }
 
 /// The payout named by the release completed, for this deal, to that account, for at least the
-/// naira agreed.
+/// amount agreed, in its currency.
 fn the_payout(deal: &Deal) -> HttpGet {
     HttpGet {
-        provider: GRID_ORIGIN.into(),
+        provider: deal.grid_origin.into(),
         path: format!("{GRID_API}/transactions/{{reference}}"),
         credentials: CREDENTIAL_KEY.into(),
         expect: vec![
@@ -132,11 +172,11 @@ fn the_payout(deal: &Deal) -> HttpGet {
             },
             Predicate::Equals {
                 at: "receivedAmount.currency.code".into(),
-                value: "NGN".into(),
+                value: deal.currency.into(),
             },
             Predicate::AtLeast {
                 at: "receivedAmount.amount".into(),
-                value: deal.amount_kobo,
+                value: deal.amount_minor,
             },
             // Last. See `PREFLIGHT_REFUSAL`.
             Predicate::Equals {
@@ -148,17 +188,21 @@ fn the_payout(deal: &Deal) -> HttpGet {
     }
 }
 
-/// The policy judged by the cosigner's own evaluator, against Grid records recorded in the sandbox:
-/// one payout's transaction straight after quoting and again once it completed, and its payee.
+/// The policy judged by the cosigner's own evaluator: against Grid records recorded in the
+/// sandbox — one naira payout's transaction straight after quoting and again once it completed,
+/// and its payee — and, for every rail, against records the fake Grid makes.
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
     use cosigner::evidence::{Evidence, ReleaseFacts};
     use cosigner::policy::{enforce_release, OutputView};
     use serde_json::Value;
 
     use super::*;
+    use crate::corridors::{self, Corridor, Rail};
+    use crate::fake_grid::{self, Config, FakeGrid};
+    use crate::grid;
 
     const PLATFORM_SCRIPT: &str =
         "51204444444444444444444444444444444444444444444444444444444444444444";
@@ -185,11 +229,15 @@ mod tests {
     fn alices_deal() -> Deal<'static> {
         Deal {
             platform_script_hex: PLATFORM_SCRIPT,
+            grid_origin: GRID_ORIGIN,
             account_id: "ExternalAccount:01a0df4a-9a9d-7e0c-0000-2fdf81a58f46",
-            account_number: "0123456789",
-            bank_name: "OPay",
+            payee: [("accountNumber", "0123456789"), ("bankName", "OPay")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             deal_tag: "spike-ok-c4164034163d8d94",
-            amount_kobo: 3_000_000,
+            currency: "NGN",
+            amount_minor: 3_000_000,
             price_sats: PRICE,
         }
     }
@@ -284,10 +332,149 @@ mod tests {
         assert!(refused.starts_with("receivedAmount.amount is "), "{refused}");
     }
 
+    /// The pre-flight clears only the deal this platform offered, with time left to be repaid in —
+    /// learned from the cosigner, never from the app.
+    #[test]
+    fn the_preflight_clears_only_the_offered_deal_with_time_to_run() {
+        use cosigner::escrow_session::DealTerms;
+        let offered = policy_for(&alices_deal());
+        let now = 1_800_000_000;
+        let sealed = |policy: &Policy, deadline: i64| DealTerms {
+            opened_at: now - 10,
+            deadline,
+            policy_sha256: cosigner::policy::policy_sha256(policy),
+        };
+        let hour = now + 3_600;
+
+        assert_eq!(
+            preflight_clears(PREFLIGHT_REFUSAL, Some(&sealed(&offered, hour)), &offered, now, 300),
+            Ok(hour)
+        );
+        // A term appended after `status` refuses in the same words now, and for ever after.
+        let appended = Policy::AllOf {
+            of: vec![offered.clone(), Policy::Never],
+        };
+        let refused =
+            preflight_clears(PREFLIGHT_REFUSAL, Some(&sealed(&appended, hour)), &offered, now, 300);
+        assert!(refused.unwrap_err().contains("another policy"));
+        // A deal too short to be repaid in.
+        let refused =
+            preflight_clears(PREFLIGHT_REFUSAL, Some(&sealed(&offered, now + 60)), &offered, now, 300);
+        assert!(refused.unwrap_err().contains("ends in 60s"));
+        // No terms at all: an older cosigner, or an answer that is not about this escrow's deal.
+        assert!(preflight_clears(PREFLIGHT_REFUSAL, None, &offered, now, 300).is_err());
+        // Any other refusal is a no.
+        let refused = preflight_clears(
+            "this escrow is not committed to a deal, so there is nothing to release",
+            Some(&sealed(&offered, hour)),
+            &offered,
+            now,
+            300,
+        );
+        assert!(refused.unwrap_err().contains("would not reimburse"));
+    }
+
     #[test]
     fn the_price_rounds_up_to_a_whole_sat() {
         assert_eq!(price_sats(23_005_382, 1_000), Some(PRICE));
         assert_eq!(price_sats(23_000_000, 1_000), Some(23_000));
         assert_eq!(price_sats(0, 1_000), None, "a cap of nothing would deny every release");
+    }
+
+    /// One payout on the fake Grid, fetched as the cosigner would: the payee, and the transaction
+    /// before funding and after it completed. SYNTHETIC — the fake's records, not Grid's.
+    struct Synthetic {
+        account_id: String,
+        payee: BTreeMap<String, String>,
+        amount: i64,
+        account: Value,
+        pending: Value,
+        completed: Value,
+    }
+
+    const TAG: &str = "deal-0c4e8d21a9f3b7e6";
+    const COMPLETE_AFTER: u64 = 5;
+
+    fn synthetic(corridor: &'static Corridor, rail: &Rail) -> Synthetic {
+        let fake = FakeGrid::manual(Config {
+            transact: "platform:transact".into(),
+            view: "enclave:view".into(),
+            complete_after_secs: COMPLETE_AFTER,
+            quote_ttl_secs: 180,
+        });
+        let payee = fake_grid::example_fields(corridor, rail, "789");
+        let body = grid::account_body(corridor.currency, rail.account_type, &payee, "Ada Obi");
+        let account = fake.create_account(None, &body).1;
+        let account_id = account["id"].as_str().unwrap().to_string();
+        let amount = rail.min_minor;
+        let quote = fake.create_quote(None, &grid::quote_body(&account_id, amount, TAG)).1;
+        let transaction_id = quote["transactionId"].as_str().unwrap();
+        let pending = fake.transaction(transaction_id).1;
+        fake.fund(None, &grid::fund_body(quote["id"].as_str().unwrap()));
+        fake.advance(COMPLETE_AFTER);
+        let completed = fake.transaction(transaction_id).1;
+        for record in [&account, &pending, &completed] {
+            assert_eq!(record["simulated"], true, "labelled as the fake's");
+        }
+        Synthetic { account_id, payee, amount, account, pending, completed }
+    }
+
+    fn deal_on<'a>(corridor: &'a Corridor, s: &'a Synthetic) -> Deal<'a> {
+        Deal {
+            platform_script_hex: PLATFORM_SCRIPT,
+            grid_origin: "http://192.168.127.254:7300",
+            account_id: &s.account_id,
+            payee: s.payee.clone(),
+            deal_tag: TAG,
+            currency: corridor.currency,
+            amount_minor: s.amount,
+            price_sats: PRICE,
+        }
+    }
+
+    /// Every rail: a completed payout releases the price, and before funding the only refusal is
+    /// the pre-flight's, word for word.
+    #[test]
+    fn on_every_rail_the_preflight_holds_and_a_completed_payout_releases() {
+        for (corridor, rail) in corridors::rails() {
+            let s = synthetic(corridor, rail);
+            let deal = deal_on(corridor, &s);
+            let on = format!("{} {}", corridor.country, rail.rail);
+            assert_eq!(
+                judge(&deal, PRICE, s.pending.clone(), s.account.clone()),
+                Err(PREFLIGHT_REFUSAL.to_string()),
+                "{on}"
+            );
+            assert_eq!(judge(&deal, PRICE, s.completed.clone(), s.account.clone()), Ok(()), "{on}");
+        }
+    }
+
+    /// Every rail: another payee, another currency, less money or another deal is refused.
+    #[test]
+    fn on_every_rail_anything_but_what_was_sealed_is_refused() {
+        for (corridor, rail) in corridors::rails() {
+            let s = synthetic(corridor, rail);
+            let deal = deal_on(corridor, &s);
+            let refused = |tx: Value, payee: Value, deal: &Deal| {
+                judge(deal, PRICE, tx, payee).expect_err("refused")
+            };
+            for field in s.payee.keys() {
+                let mut elsewhere = s.account.clone();
+                elsewhere["accountInfo"][field] = "somebody else's".into();
+                let why = refused(s.completed.clone(), elsewhere, &deal);
+                assert!(why.starts_with(&format!("accountInfo.{field} is ")), "{why}");
+            }
+            let mut dollars = s.completed.clone();
+            dollars["receivedAmount"]["currency"]["code"] = "USD".into();
+            let why = refused(dollars, s.account.clone(), &deal);
+            assert!(why.starts_with("receivedAmount.currency.code is "), "{why}");
+            let mut short = s.completed.clone();
+            short["receivedAmount"]["amount"] = (s.amount - 1).into();
+            let why = refused(short, s.account.clone(), &deal);
+            assert!(why.starts_with("receivedAmount.amount is "), "{why}");
+            let bobs = Deal { deal_tag: "bob-0c4e8d21a9f3b7e6", ..deal_on(corridor, &s) };
+            let why = refused(s.completed.clone(), s.account.clone(), &bobs);
+            assert!(why.starts_with("description is "), "{why}");
+        }
     }
 }

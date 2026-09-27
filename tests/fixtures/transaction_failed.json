@@ -1,0 +1,66 @@
+{
+  "_fixture": "RECORDED from the Grid sandbox 2026-09-26: GET /transactions/{id} with the VIEW token, after a payout to an account ending 002 failed.",
+  "createdAt": "2026-09-26T19:57:53.746134Z",
+  "customerId": "Customer:01a0df30-6d3c-938e-0000-69434433047f",
+  "description": "spike-fail-6ff056d5aaad8911",
+  "destination": {
+    "accountId": "ExternalAccount:01a0df4b-a67e-7e0c-0000-c9dc53ab474d",
+    "destinationType": "ACCOUNT"
+  },
+  "direction": "DEBIT",
+  "exchangeRate": 7.361722333333334,
+  "expectedSettlementAt": null,
+  "failureReason": "QUOTE_EXECUTION_FAILED",
+  "fees": 920215,
+  "id": "Transaction:01a0df4b-acd2-b78f-0000-4d0170142e41",
+  "paymentInstructions": [
+    {
+      "accountOrWalletInfo": {
+        "accountType": "SPARK_WALLET",
+        "address": "sparkrt1pgss8exj33xx9qqlsegnz64zrghkz504rfxgt0jk72x3q04dyhza8dnj0cu0jd",
+        "assetType": "USDB",
+        "invoice": "sparkrt1pgss8ter0fhc4c220f3zftmpz49h8wqte8eg3m5zkrraplgc048jucgszg3ssqgjzqqekv73mmh842yj7drsjwh7t7tz5zt8wf5kghm5v4ehggszppjp5s80cg3qjdzc55g2567tn3lj705hdsr577tg8ah795mlnt6807y657qhkmgfkf9w75p4wz3l8vhua85zdn6ryj32zuj0p00pv2l5z4u47mw6h4s"
+      }
+    }
+  ],
+  "paymentRail": "BANK_TRANSFER",
+  "platformCustomerId": "01a0df30-6d14-b4db-0000-f107fa1c413c",
+  "platformFees": 0,
+  "quoteId": "Quote:01a0df4b-acbc-5246-0000-1a2cc6cfe217",
+  "railSelectionMode": "AUTO",
+  "receivedAmount": {
+    "amount": 3000000,
+    "currency": {
+      "code": "NGN",
+      "decimals": 2,
+      "name": "Nigerian Naira",
+      "symbol": "₦"
+    }
+  },
+  "refund": {
+    "initiatedAt": "2026-09-26T19:57:55.185279Z",
+    "reason": "TRANSACTION_FAILED",
+    "reference": "b2b7c0f9-14c4-4a99-b9b8-3105e990f8a8",
+    "settledAt": "2026-09-26T19:57:55.197502Z",
+    "status": "COMPLETED"
+  },
+  "sentAmount": {
+    "amount": 23005382,
+    "currency": {
+      "code": "USDB",
+      "decimals": 6,
+      "name": "USDB",
+      "symbol": "$"
+    }
+  },
+  "settledAt": "2026-09-26T19:57:55.139580Z",
+  "settlementTimelineSeconds": null,
+  "source": {
+    "currency": "USDB",
+    "customerId": "Customer:01a0df30-6d3c-938e-0000-69434433047f",
+    "sourceType": "REALTIME_FUNDING"
+  },
+  "status": "FAILED",
+  "type": "OUTGOING",
+  "updatedAt": "2026-09-26T19:57:55.171399Z"
+}
