@@ -20,17 +20,21 @@
 //! The enclave-facing routes (`/escrow/stream`, `/escrow/send`, `/pair/wallet`, `/status`) are
 //! `escrow-service`'s.
 
+mod deals;
 mod grid;
 mod payout;
+mod treasury;
 
 use std::collections::BTreeSet;
+use std::future::IntoFuture;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use ark::client::AspClient;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use cosigner::evidence::safe_reference;
@@ -41,11 +45,17 @@ use serde::Deserialize;
 use serde_json::json;
 use threshold::identifier::Identifier;
 
-use grid::Grid;
+use deals::{Deals, Replay};
+use grid::{Grid, GridError};
 use payout::{policy_for, price_sats, Deal, PREFLIGHT_REFUSAL};
+use treasury::Treasury;
 
 /// How often [`watch`] asks Grid about payouts in flight.
 const WATCH_EVERY: Duration = Duration::from_secs(5);
+
+/// The least time a sealed deal must have left for the platform to pay into it. A sandbox payout
+/// was repaid about a minute after funding; the rest is margin for a slow bank.
+const MIN_DEAL_LEFT_SECS: u64 = 5 * 60;
 
 #[derive(Parser)]
 #[command(about = "Send to a bank: paid out through Lightspark Grid, reimbursed from a Bitcoin escrow.")]
@@ -57,9 +67,14 @@ struct Args {
     /// The ASP, for reading what an escrow holds and submitting what was approved.
     #[arg(long, env = "ASP_URL", default_value = "http://127.0.0.1:7070")]
     asp: String,
-    /// This platform's own key, x-only hex — where it is reimbursed.
-    #[arg(long, env = "PLATFORM_PAYOUT_XONLY")]
-    payout_xonly: String,
+    /// The platform's own key, where it is repaid: created on first run, 0600. Defaults to a file
+    /// next to the store (`platform-state.json` → `platform-state.payout.key`).
+    #[arg(long, env = "PLATFORM_PAYOUT_KEY")]
+    payout_key: Option<std::path::PathBuf>,
+    /// Where the operator routes listen — the treasury moves the platform's money, so this is
+    /// loopback unless deliberately exposed.
+    #[arg(long, env = "PLATFORM_OPERATOR_BIND", default_value = "127.0.0.1:7201")]
+    operator_bind: String,
     /// The label the enclave's image knows this platform by.
     #[arg(long, env = "PLATFORM_LABEL", default_value = "merlin-platform")]
     label: String,
@@ -70,7 +85,7 @@ struct Args {
     ///
     /// ponytail: one fixed rate, for the sandbox. Production prices from a BTC/USD feed, with
     /// the platform's margin in it.
-    #[arg(long, env = "PLATFORM_SATS_PER_USD")]
+    #[arg(long, env = "PLATFORM_SATS_PER_USD", value_parser = clap::value_parser!(u64).range(1..))]
     sats_per_usd: u64,
     /// A Grid token that can TRANSACT. Never the one in the enclave's image.
     #[arg(long, env = "GRID_CLIENT_ID", hide_env_values = true)]
@@ -87,6 +102,13 @@ struct App {
     sats_per_usd: u64,
     /// Payouts being funded right now. Two calls that both saw one unfunded would both pay for it.
     funding: std::sync::Mutex<BTreeSet<String>>,
+    /// Every deal tag quoted so far — see [`deals`].
+    deals: Deals,
+    /// Held while quoting, so two copies of one request cannot both miss [`App::deals`] and both
+    /// quote.
+    ///
+    /// ponytail: one lock for every payout; per-tag locks if quoting ever needs to run in parallel.
+    quoting: tokio::sync::Mutex<()>,
 }
 
 #[tokio::main]
@@ -98,26 +120,16 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
 
-    // Where this platform is paid, derived from its own key. The sealed policy names its script
-    // as the only place a release may go.
-    let mut asp = ark::client::AspClient::connect(&args.asp)
-        .await
-        .map_err(|e| anyhow::anyhow!("connecting to the ASP at {}: {e}", args.asp))?;
-    let info = asp
-        .get_info()
-        .await
-        .map_err(|e| anyhow::anyhow!("asking the ASP what it is: {e}"))?;
-    let network =
-        ark::client::parse_network(&info.network).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let payout = ark::client::ark_address(
-        &args.payout_xonly,
-        &info.signer_pubkey,
-        info.unilateral_exit_delay as u32,
-        network,
-    )
-    .map_err(|e| anyhow::anyhow!("deriving where this platform is paid: {e}"))?;
-    let payout_script =
-        ark::client::ark_address_script_pubkey_hex(&payout).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Where this platform is paid: its own key's address. The sealed policy names that script as
+    // the only place a release may go, and the treasury keeps what arrives there alive.
+    let key_path = args
+        .payout_key
+        .clone()
+        .or_else(|| args.store.as_ref().map(|s| s.with_extension("payout.key")))
+        .ok_or_else(|| anyhow::anyhow!("--payout-key is needed when there is no --store"))?;
+    let treasury = Arc::new(Treasury::open(&key_path, &args.asp).await?);
+    let payout = treasury.address.clone();
+    let payout_script = treasury.script.clone();
 
     let identifier =
         Identifier::derive(args.label.as_bytes()).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -141,12 +153,16 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Arc::new(App {
         wire: Arc::clone(&wire),
-        grid: Grid::new(args.grid_client_id, args.grid_client_secret),
+        grid: Grid::new(args.grid_client_id, args.grid_client_secret)?,
         payout_script,
         sats_per_usd: args.sats_per_usd,
         funding: Default::default(),
+        // Next to the escrow store: `platform-state.json` keeps its tags in `platform-state.deals.json`.
+        deals: Deals::load(args.store.as_ref().map(|p| p.with_extension("deals.json"))).await?,
+        quoting: Default::default(),
     });
     tokio::spawn(watch(Arc::clone(&app)));
+    tokio::spawn(treasury::keep_alive(Arc::clone(&treasury)));
 
     let router = wire_router(Arc::clone(&service), Arc::clone(&wire.connections)).merge(
         Router::new()
@@ -154,14 +170,26 @@ async fn main() -> anyhow::Result<()> {
             .route("/payouts/{request_id}/fund", post(fund))
             .with_state(app),
     );
+    // The treasury moves the platform's own money, so it is never on the public listener.
+    let operator = Router::new()
+        .route("/treasury", get(treasury_view))
+        .route("/treasury/send", post(treasury_send))
+        .route("/treasury/renew", post(treasury_renew))
+        .route("/treasury/exit", post(treasury_exit))
+        .with_state(treasury);
     let listener = tokio::net::TcpListener::bind((args.bind.as_str(), args.port)).await?;
+    let operator_listener = tokio::net::TcpListener::bind(&args.operator_bind).await?;
     tracing::info!(
         addr = %listener.local_addr()?,
+        operator = %operator_listener.local_addr()?,
         identifier = %hex::encode(identifier.serialize()),
         payout = %payout,
         "platform up — Grid SANDBOX payouts, real Bitcoin escrow"
     );
-    axum::serve(listener, router).await?;
+    tokio::try_join!(
+        axum::serve(listener, router).into_future(),
+        axum::serve(operator_listener, operator).into_future(),
+    )?;
     Ok(())
 }
 
@@ -208,17 +236,61 @@ async fn quote(State(app): State<Arc<App>>, Json(ask): Json<PayoutRequest>) -> R
         );
     }
 
+    let _quoting = app.quoting.lock().await;
+    let asked = deals::Asked {
+        escrow_key: escrow_key.clone(),
+        account_number: ask.account_number.clone(),
+        bank_name: ask.bank_name.clone(),
+        full_name: ask.full_name.clone(),
+        amount_kobo: ask.amount_kobo,
+    };
+    match app.deals.replay(&ask.deal_tag, &asked).await {
+        Replay::New => {}
+        Replay::Same(answer) => return Json(answer).into_response(),
+        Replay::Conflict => {
+            return fail(
+                StatusCode::CONFLICT,
+                "that deal tag is already another payout's; a new payout needs a new tag",
+            )
+        }
+    }
+
+    // Keyed by the tag, so a request replayed after a crash, before its answer was written down,
+    // gets Grid's first account and quote back rather than new ones.
     let account = match app
         .grid
-        .external_account(&ask.account_number, &ask.bank_name, &ask.full_name)
+        .external_account(
+            &format!("merlin-payee-{}", ask.deal_tag),
+            &ask.account_number,
+            &ask.bank_name,
+            &ask.full_name,
+        )
         .await
     {
         Ok(account) => account,
-        Err(e) => return fail(StatusCode::BAD_GATEWAY, &e),
+        Err(e) => return grid_failed(e),
     };
-    let quote = match app.grid.quote(&account.id, ask.amount_kobo, &ask.deal_tag).await {
+    // Grid checks the name against the bank's records. Money sent to the wrong person is the
+    // mistake a customer cannot take back, so a clear mismatch stops here; anything short of a
+    // match goes back to the app with the bank's name, for the customer to confirm.
+    if account.beneficiary_verification_status.as_deref() == Some("NOT_MATCHED") {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "the bank says this account belongs to someone else; check the name and the number",
+        );
+    }
+    let quote = match app
+        .grid
+        .quote(
+            &format!("merlin-quote-{}", ask.deal_tag),
+            &account.id,
+            ask.amount_kobo,
+            &ask.deal_tag,
+        )
+        .await
+    {
         Ok(quote) => quote,
-        Err(e) => return fail(StatusCode::BAD_GATEWAY, &e),
+        Err(e) => return grid_failed(e),
     };
     // Both ids end up in paths the cosigner fetches, so they are held to the cosigner's own rule.
     if safe_reference(&account.id).is_none() || safe_reference(&quote.transaction_id).is_none() {
@@ -276,11 +348,17 @@ async fn quote(State(app): State<Arc<App>>, Json(ask): Json<PayoutRequest>) -> R
         );
     }
 
-    Json(json!({
+    let answer = json!({
         "request_id": request_id,
         "quote_id": quote.id,
         "transaction_id": quote.transaction_id,
         "external_account_id": account.id,
+        // Who the bank says the account belongs to, for the customer to confirm before sealing.
+        "payee": {
+            "name_given": ask.full_name,
+            "name_at_bank": account.beneficiary_verified_data.and_then(|d| d.full_name),
+            "name_check": account.beneficiary_verification_status,
+        },
         // The price. What Grid charges the platform is shown for the walkthrough, not agreed to.
         "sats": price,
         "grid_cost_micro_usdb": quote.total_sending_amount,
@@ -288,12 +366,83 @@ async fn quote(State(app): State<Arc<App>>, Json(ask): Json<PayoutRequest>) -> R
         "amount_kobo": ask.amount_kobo,
         "expires_at": quote.expires_at,
         "policy": policy,
-    }))
-    .into_response()
+    });
+    if let Err(e) = app.deals.record(&ask.deal_tag, asked, answer.clone()).await {
+        return fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("the payout could not be written down: {e}"),
+        );
+    }
+    Json(answer).into_response()
+}
+
+#[derive(Deserialize)]
+struct FundRequest {
+    /// When the deal the app sealed ends, in seconds since the epoch.
+    deal_deadline: u64,
+}
+
+/// Whether something ending at `until` leaves the platform time to be repaid before it does.
+///
+/// Two things end: the deal, and the escrow's VTXOs — a release spends them, so it has to happen
+/// before the Ark server can sweep them.
+fn lasts(what: &str, until: u64, now: u64) -> Result<(), String> {
+    let left = until.saturating_sub(now);
+    if left >= MIN_DEAL_LEFT_SECS {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} in {left}s, and a payout needs at least {MIN_DEAL_LEFT_SECS}s to be repaid in"
+        ))
+    }
+}
+
+/// When the escrow funds this payout's pre-flight picked out will expire, and whether that is too
+/// soon to be repaid from them.
+async fn escrow_lasts(app: &App, request_id: &str, now: u64) -> Result<(), String> {
+    let outpoints: Vec<String> = app
+        .wire
+        .service
+        .store
+        .lock()
+        .await
+        .reimbursements
+        .get(request_id)
+        .and_then(|r| r.proposal.as_ref())
+        .map(|p| p.inputs.iter().map(|i| format!("{}:{}", i.txid, i.vout)).collect())
+        .unwrap_or_default();
+    if outpoints.is_empty() {
+        return Err("the pre-flight picked out no escrow funds".into());
+    }
+    let mut asp = AspClient::connect(&app.wire.service.asp_url)
+        .await
+        .map_err(|e| format!("connecting to the ASP: {e}"))?;
+    let soonest = asp
+        .get_vtxos_by_outpoints(&outpoints)
+        .await
+        .map_err(|e| format!("asking the indexer about the escrow's funds: {e}"))?
+        .iter()
+        .map(|v| v.expires_at)
+        .min()
+        .ok_or("the indexer does not know the escrow's funds")?;
+    lasts("the escrow's funds expire", soonest.max(0) as u64, now)
 }
 
 /// The app has sealed the policy. Check this platform will be reimbursed, then pay.
-async fn fund(State(app): State<Arc<App>>, Path(request_id): Path<String>) -> Response {
+async fn fund(
+    State(app): State<Arc<App>>,
+    Path(request_id): Path<String>,
+    Json(ask): Json<FundRequest>,
+) -> Response {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // Taken on the app's word: the platform cannot see the sealed session, so this catches an
+    // app's mistake, not its malice — the pre-flight proves a deal is live, not how long it lives.
+    // ponytail: the real fix is the cosigner telling the service the sealed deadline.
+    if let Err(why) = lasts("the deal ends", ask.deal_deadline, now) {
+        return fail(StatusCode::CONFLICT, &format!("{why}; seal a longer one"));
+    }
     if !app.funding.lock().unwrap().insert(request_id.clone()) {
         return fail(StatusCode::CONFLICT, "this payout is being funded already");
     }
@@ -325,7 +474,7 @@ async fn fund(State(app): State<Arc<App>>, Path(request_id): Path<String>) -> Re
     }
     let quote = match app.grid.quote_status(&r.started_ref).await {
         Ok(quote) => quote,
-        Err(e) => return fail(StatusCode::BAD_GATEWAY, &e),
+        Err(e) => return grid_failed(e),
     };
     if quote.status != "PENDING" {
         return fail(
@@ -358,17 +507,37 @@ async fn fund(State(app): State<Arc<App>>, Path(request_id): Path<String>) -> Re
         }
     }
 
-    if let Err(e) = app.grid.sandbox_fund(&quote.id).await {
-        // It may have gone through anyway. `watch` settles it from the quote's status either way.
+    // The escrow's own clock. The release spends the VTXOs the pre-flight just picked out, and the
+    // Ark server sweeps a VTXO once it expires — so funds about to expire are no funds to be
+    // repaid from. Given up now, nothing signed and nothing paid, which also frees the escrow.
+    if let Err(why) = escrow_lasts(&app, &request_id, now).await {
+        if let Err(e) = app.wire.service.give_up(&request_id, &why).await {
+            tracing::warn!(%request_id, %e, "not funded, and not given up yet");
+        }
+        return fail(StatusCode::CONFLICT, &format!("not funded: {why}"));
+    }
+
+    // Written down BEFORE paying. A crash, or a retry, after this point finds the payout funded and
+    // pays nothing more. If the payment below then never happens, the quote expires and `watch`
+    // gives the payout up — a payout paid for twice is the one outcome with no way back.
+    app.wire.service.advance(&request_id, Stage::Started).await;
+    if let Err(e) = app.wire.service.persist().await {
+        return fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("not funded: could not write down that it was about to be: {e}"),
+        );
+    }
+    if let Err(e) = app
+        .grid
+        .sandbox_fund(&format!("merlin-fund-{}", quote.id), &quote.id)
+        .await
+    {
+        // Paid or not, `watch` settles it from the quote: repaid if it completes, given up if it
+        // expires.
         return fail(
             StatusCode::BAD_GATEWAY,
             &format!("funding may not have gone through: {e}"),
         );
-    }
-    app.wire.service.advance(&request_id, Stage::Started).await;
-    if let Err(e) = app.wire.service.persist().await {
-        // Recoverable: `watch` also follows a pre-flighted payout still marked as quoted.
-        tracing::warn!(%request_id, %e, "funded, but could not write that down");
     }
     Json(json!({
         "outcome": "funded",
@@ -448,6 +617,101 @@ async fn settle(app: &App, request_id: &str, transaction_id: &str) {
     }
 }
 
+/// What the platform holds, and when each VTXO renews and expires.
+async fn treasury_view(State(treasury): State<Arc<Treasury>>) -> Response {
+    let held = match treasury.held().await {
+        Ok(held) => held,
+        Err(e) => return fail(StatusCode::BAD_GATEWAY, &e),
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    Json(json!({
+        "address": treasury.address,
+        "balance_sats": held.iter().map(|v| v.amount_sats).sum::<u64>(),
+        "vtxos": held.iter().map(|v| json!({
+            "outpoint": format!("{}:{}", v.txid, v.vout),
+            "amount_sats": v.amount_sats,
+            "renews_in_secs": v.renews_at() - now,
+            "expires_in_secs": v.expires_at - now,
+        })).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct TreasurySend {
+    to_ark_address: String,
+    sats: u64,
+}
+
+/// Send sats out of the treasury, to any Ark address.
+async fn treasury_send(
+    State(treasury): State<Arc<Treasury>>,
+    Json(send): Json<TreasurySend>,
+) -> Response {
+    match treasury.send(&send.to_ark_address, send.sats).await {
+        Ok(ark_txid) => Json(json!({ "ark_txid": ark_txid, "sats": send.sats })).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TreasuryExit {
+    to_address: String,
+    sats: u64,
+}
+
+/// Take sats out of Ark to a bitcoin address: a collaborative exit, paid on chain by the next
+/// batch's commitment transaction.
+async fn treasury_exit(
+    State(treasury): State<Arc<Treasury>>,
+    Json(exit): Json<TreasuryExit>,
+) -> Response {
+    match treasury.exit(&exit.to_address, exit.sats).await {
+        Ok(commitment_txid) => Json(json!({
+            "commitment_txid": commitment_txid,
+            "sats": exit.sats,
+            "to_address": exit.to_address,
+        }))
+        .into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+/// Renew everything now, rather than when it falls due.
+async fn treasury_renew(State(treasury): State<Arc<Treasury>>) -> Response {
+    match treasury.renew(true).await {
+        Ok(Some(commitment_txid)) => Json(json!({ "commitment_txid": commitment_txid })).into_response(),
+        Ok(None) => Json(json!({ "commitment_txid": null, "why": "the treasury holds nothing" })).into_response(),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, &e),
+    }
+}
+
+/// A Grid failure, told to the app as whose problem it is.
+fn grid_failed(e: GridError) -> Response {
+    match e {
+        GridError::Rejected(why) => fail(StatusCode::BAD_REQUEST, &why),
+        GridError::Unavailable(why) => fail(StatusCode::BAD_GATEWAY, &why),
+    }
+}
+
 fn fail(status: StatusCode, why: &str) -> Response {
     (status, Json(json!({ "error": why }))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_a_payout_depends_on_must_outlive_the_time_it_takes() {
+        let now = 1_800_000_000;
+        assert!(lasts("the deal ends", now + MIN_DEAL_LEFT_SECS, now).is_ok());
+        assert!(lasts("the deal ends", now + MIN_DEAL_LEFT_SECS - 1, now).is_err());
+        // Something already past says so, rather than wrapping round.
+        assert!(lasts("the escrow's funds expire", now - 60, now)
+            .unwrap_err()
+            .starts_with("the escrow's funds expire in 0s"));
+    }
 }

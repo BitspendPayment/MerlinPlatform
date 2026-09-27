@@ -70,7 +70,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "ark"
 version = "0.1.0"
-source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=f25ff8bc954a6c090af4871b307224847662f255#f25ff8bc954a6c090af4871b307224847662f255"
+source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=e263e28a2f2eaceb65e0ece34f52330c38a91b8e#e263e28a2f2eaceb65e0ece34f52330c38a91b8e"
 dependencies = [
  "ark-core",
  "bitcoin",
@@ -472,7 +472,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 [[package]]
 name = "cosigner"
 version = "0.1.0"
-source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=f25ff8bc954a6c090af4871b307224847662f255#f25ff8bc954a6c090af4871b307224847662f255"
+source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=e263e28a2f2eaceb65e0ece34f52330c38a91b8e#e263e28a2f2eaceb65e0ece34f52330c38a91b8e"
 dependencies = [
  "ark",
  "bitcoin",
@@ -618,7 +618,7 @@ dependencies = [
 [[package]]
 name = "escrow-service"
 version = "0.1.0"
-source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=f25ff8bc954a6c090af4871b307224847662f255#f25ff8bc954a6c090af4871b307224847662f255"
+source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=e263e28a2f2eaceb65e0ece34f52330c38a91b8e#e263e28a2f2eaceb65e0ece34f52330c38a91b8e"
 dependencies = [
  "anyhow",
  "ark",
@@ -1331,10 +1331,12 @@ dependencies = [
  "anyhow",
  "ark",
  "axum 0.8.9",
+ "bitcoin",
  "clap",
  "cosigner",
  "escrow-service",
  "hex",
+ "rand 0.8.5",
  "reqwest",
  "serde",
  "serde_json",
@@ -2209,7 +2211,7 @@ dependencies = [
 [[package]]
 name = "threshold"
 version = "0.1.0"
-source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=f25ff8bc954a6c090af4871b307224847662f255#f25ff8bc954a6c090af4871b307224847662f255"
+source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=e263e28a2f2eaceb65e0ece34f52330c38a91b8e#e263e28a2f2eaceb65e0ece34f52330c38a91b8e"
 dependencies = [
  "elliptic-curve",
  "hex-conservative",
