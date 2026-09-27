@@ -793,6 +793,9 @@ async fn fund(
 /// Quote a deal again, its quote having expired unpaid: the same payee, amount and deal tag, under
 /// a new idempotency key — the first key would only replay the expired quote. Refused if it now
 /// costs more than the price the customer agreed, which is all the sealed caps release.
+///
+/// The error is the reply `fund` sends, whole: boxing it would only be undone at the one caller.
+#[allow(clippy::result_large_err)]
 async fn requote(app: &App, request_id: &str, agreed_sats: u64) -> Result<grid::Quote, Response> {
     let Some((tag, deal)) = app.deals.of_request(request_id).await else {
         return Err(fail(
