@@ -70,7 +70,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "ark"
 version = "0.1.0"
-source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=29c1e04e5f56a1b12b600500537f34d4571ab670#29c1e04e5f56a1b12b600500537f34d4571ab670"
+source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=c791730f5ef5c902540415aa58e88edd1a8a101b#c791730f5ef5c902540415aa58e88edd1a8a101b"
 dependencies = [
  "ark-core",
  "bitcoin",
@@ -499,7 +499,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 [[package]]
 name = "cosigner"
 version = "0.1.0"
-source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=29c1e04e5f56a1b12b600500537f34d4571ab670#29c1e04e5f56a1b12b600500537f34d4571ab670"
+source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=c791730f5ef5c902540415aa58e88edd1a8a101b#c791730f5ef5c902540415aa58e88edd1a8a101b"
 dependencies = [
  "ark",
  "bitcoin",
@@ -651,7 +651,7 @@ dependencies = [
 [[package]]
 name = "enclave-client"
 version = "0.1.0"
-source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=29c1e04e5f56a1b12b600500537f34d4571ab670#29c1e04e5f56a1b12b600500537f34d4571ab670"
+source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=c791730f5ef5c902540415aa58e88edd1a8a101b#c791730f5ef5c902540415aa58e88edd1a8a101b"
 dependencies = [
  "base64 0.22.1",
  "ciborium",
@@ -682,7 +682,7 @@ dependencies = [
 [[package]]
 name = "escrow-service"
 version = "0.1.0"
-source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=29c1e04e5f56a1b12b600500537f34d4571ab670#29c1e04e5f56a1b12b600500537f34d4571ab670"
+source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=c791730f5ef5c902540415aa58e88edd1a8a101b#c791730f5ef5c902540415aa58e88edd1a8a101b"
 dependencies = [
  "anyhow",
  "ark",
@@ -2332,7 +2332,7 @@ dependencies = [
 [[package]]
 name = "threshold"
 version = "0.1.0"
-source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=29c1e04e5f56a1b12b600500537f34d4571ab670#29c1e04e5f56a1b12b600500537f34d4571ab670"
+source = "git+https://github.com/BitspendPayment/MerlinWallet?rev=c791730f5ef5c902540415aa58e88edd1a8a101b#c791730f5ef5c902540415aa58e88edd1a8a101b"
 dependencies = [
  "elliptic-curve",
  "hex-conservative",
